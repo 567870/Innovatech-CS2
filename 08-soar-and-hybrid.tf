@@ -6,8 +6,8 @@
 # ==============================================================================
 
 resource "aws_instance" "soar_server" {
-  ami                    = data.aws_ami.amazon_linux_2023.id
-  instance_type          = var.ec2_instance_type
+  ami           = data.aws_ami.amazon_linux_2023.id
+  instance_type = var.ec2_instance_type
   # Hybrid VPN Border: placed in the Public DMZ subnet so the Elastic IP below is reachable (return traffic via IGW)
   subnet_id              = aws_subnet.public_1a.id
   iam_instance_profile   = aws_iam_instance_profile.soar_profile.name
