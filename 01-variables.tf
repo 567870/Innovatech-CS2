@@ -62,5 +62,5 @@ variable "db_password" {
 variable "wireguard_peer_public_key" {
   description = "WireGuard public key of the GNS3 pfSense peer (10.99.0.2). Leave empty on first apply, then add it and re-run the peer step"
   type        = string
-  default     = ""
+  default     = "KzixqLwd0SSgv1UVCY1DmMbh4juv0GMMsRuE7zU9n1E="
 }
