@@ -210,3 +210,16 @@ resource "aws_route_table_association" "db_1b_assoc" {
   subnet_id      = aws_subnet.private_db_1b.id
   route_table_id = aws_route_table.isolated_db_rt.id
 }
+
+# Hybrid VPN routes for public subnets containing the WireGuard EC2
+resource "aws_route" "public_hybrid_gns3_lan_route" {
+  route_table_id         = aws_route_table.public_rt.id
+  destination_cidr_block = var.onprem_gns3_cidr
+  network_interface_id   = aws_instance.soar_server.primary_network_interface_id
+}
+
+resource "aws_route" "public_hybrid_wireguard_route" {
+  route_table_id         = aws_route_table.public_rt.id
+  destination_cidr_block = var.wireguard_vpn_cidr
+  network_interface_id   = aws_instance.soar_server.primary_network_interface_id
+}
