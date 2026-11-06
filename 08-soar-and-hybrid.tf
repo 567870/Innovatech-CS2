@@ -33,7 +33,7 @@ resource "aws_instance" "soar_server" {
     ignore_changes = [ami, user_data]
   }
 
-  user_data = base64encode(<<-EOF
+  user_data = <<-EOF
 #!/bin/bash
 dnf update -y
 dnf install -y docker wireguard-tools iptables-nft
@@ -309,7 +309,6 @@ docker run -d --name soar-engine --restart always --net="host" --cap-add=NET_ADM
   -v /var/log/soar:/var/log/soar \
   innovatech-soar
 EOF
-  )
 }
 
 # ------------------------------------------------------------------------------

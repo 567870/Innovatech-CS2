@@ -24,7 +24,7 @@ resource "aws_instance" "monitoring_server" {
     ignore_changes = [ami, user_data]
   }
 
-  user_data = base64encode(<<-EOF
+  user_data = <<-EOF
 #!/bin/bash
 
 # 0. Prevent OOM Crashes on t3.micro (1GB Swap File)
@@ -454,5 +454,4 @@ chown -R grafana:grafana /var/lib/grafana/dashboards
 systemctl daemon-reload
 systemctl enable --now grafana-server
 EOF
-  )
 }
