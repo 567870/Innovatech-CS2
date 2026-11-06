@@ -143,6 +143,13 @@ resource "aws_security_group" "soar_sg" {
     protocol    = "udp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+  ingress {
+    description = "Allow ICMP from GNS3 HQ"
+    from_port   = -1
+    to_port     = -1
+    protocol    = "icmp"
+    cidr_blocks = ["192.168.1.0/24"]
+  }
 
   # SOAR Event Listener Webhook API & Prometheus /metrics Endpoint (Port 5000)
   ingress {
