@@ -30,8 +30,10 @@ resource "aws_instance" "soar_server" {
   ]
 
   lifecycle {
-    ignore_changes = [ami, user_data]
+    ignore_changes = [ami]
   }
+
+  user_data_replace_on_change = true
 
   user_data = <<-EOF
 #!/bin/bash
@@ -44,17 +46,20 @@ sysctl -w net.ipv4.ip_forward=1
 echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
 
 # ------------------------------------------------------------------------------
-# 0. Hybrid WireGuard Site-to-Site Tunnel (SOAR-Server = 10.99.0.1, pfSense = 10.99.0.2)
-#    Server keys are generated on first boot. Read the public key (via SSM) with:
-#    cat /etc/wireguard/server_public.key
+# 0. Hybrid WireGuard Site-to-Site Tunnel
 # ------------------------------------------------------------------------------
+
 mkdir -p /etc/wireguard
 chmod 700 /etc/wireguard
 umask 077
+
+# Generate AWS server keys only if they do not already exist
 if [ ! -f /etc/wireguard/server_private.key ]; then
-  wg genkey | tee /etc/wireguard/server_private.key | wg pubkey > /etc/wireguard/server_public.key
+  wg genkey | tee /etc/wireguard/server_private.key \
+    | wg pubkey > /etc/wireguard/server_public.key
 fi
 
+# Create WireGuard interface
 cat << WGCONF > /etc/wireguard/wg0.conf
 [Interface]
 Address = 10.99.0.1/24
@@ -64,19 +69,26 @@ PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACC
 PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT
 WGCONF
 
-# Peer block for GNS3 pfSense (only written once var.wireguard_peer_public_key is set)
+# Add GNS3 pfSense peer
 if [ -n "${var.wireguard_peer_public_key}" ]; then
-cat << WGPEER >> /etc/wireguard/wg0.conf
+  cat << WGPEER >> /etc/wireguard/wg0.conf
 
 [Peer]
 PublicKey = ${var.wireguard_peer_public_key}
 AllowedIPs = 10.99.0.2/32, ${var.onprem_gns3_cidr}
-PersistentKeepalive = 25
 WGPEER
 fi
 
 chmod 600 /etc/wireguard/wg0.conf
-umask 022
+
+# Enable persistent IPv4 forwarding
+cat << SYSCTL > /etc/sysctl.d/99-wireguard.conf
+net.ipv4.ip_forward = 1
+SYSCTL
+
+sysctl --system
+
+# Start WireGuard
 systemctl enable --now wg-quick@wg0
 
 # ------------------------------------------------------------------------------
