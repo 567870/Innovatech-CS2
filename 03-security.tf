@@ -197,6 +197,29 @@ resource "aws_security_group" "soar_sg" {
   tags = { Name = "SOAR-Platform-SG" }
 }
 
+# 5. Isolated Database Security Group (REQ-NCA-P2-03)
+resource "aws_security_group" "db_sg" {
+  name        = "main-db-sg"
+  description = "Allow MySQL traffic strictly from Web Tier"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port       = 3306
+    to_port         = 3306
+    protocol        = "tcp"
+    security_groups = [aws_security_group.web_sg.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = "Database-SG" }
+}
+
 # 6. GitHub Self-Hosted Runner Security Group
 resource "aws_security_group" "runner_sg" {
   name        = "main-runner-sg"
