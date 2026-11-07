@@ -151,7 +151,7 @@ resource "aws_security_group" "soar_sg" {
     protocol    = "udp"
     cidr_blocks = ["0.0.0.0/0"]
   }
-  
+
   ingress {
     description = "Allow ICMP from GNS3 HQ"
     from_port   = -1
@@ -182,7 +182,7 @@ resource "aws_security_group" "soar_sg" {
     description = "Allow return transit traffic from AWS VPC back to Hybrid Gateway"
     from_port   = 0
     to_port     = 0
-    protocol    = "-1" 
+    protocol    = "-1"
     cidr_blocks = [var.vpc_cidr]
   }
 
