@@ -71,6 +71,14 @@ resource "aws_security_group" "web_sg" {
     cidr_blocks = [var.vpc_cidr]
   }
 
+  ingress {
+    description = "Allow ICMP Ping from internal networks"
+    from_port   = -1
+    to_port     = -1
+    protocol    = "icmp"
+    cidr_blocks = [var.vpc_cidr, var.onprem_gns3_cidr, var.wireguard_vpn_cidr]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
