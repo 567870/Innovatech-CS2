@@ -65,8 +65,8 @@ cat << WGCONF > /etc/wireguard/wg0.conf
 Address = 10.99.0.1/24
 ListenPort = 51820
 PrivateKey = $(cat /etc/wireguard/server_private.key)
-PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT
-PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT
+PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
 WGCONF
 
 # Add GNS3 pfSense peer
@@ -103,6 +103,8 @@ systemctl enable --now wg-quick@wg0
 mkdir -p /opt/soar-engine /var/log/soar
 cd /opt/soar-engine
 
+export VPC_ID="${aws_vpc.main.id}"
+
 cat << 'PY' > app.py
 import os
 import re
@@ -112,10 +114,16 @@ import socket
 import datetime
 import threading
 import subprocess
+import boto3
+import random
 from flask import Flask, request, jsonify
 from prometheus_client import Counter, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
 app = Flask(__name__)
+
+# Initialize AWS EC2 Client
+ec2_client = boto3.client('ec2', region_name='eu-central-1')
+VPC_ID = os.environ.get('VPC_ID')
 
 # ---------------- Prometheus Metrics (REQ-NCA-P2-09) ----------------
 SOAR_EVENTS_RECEIVED = Counter(
@@ -136,6 +144,7 @@ SOAR_BLOCKED_IPS = Gauge(
 # Initialize default label series so Grafana displays 0 immediately on boot
 SOAR_EVENTS_RECEIVED.labels(alert_type='SSHBruteForce', severity='critical', source_platform='gns3-onprem').inc(0)
 SOAR_ACTIONS_EXECUTED.labels(action='firewall_ip_quarantine', status='success').inc(0)
+SOAR_ACTIONS_EXECUTED.labels(action='aws_nacl_quarantine', status='success').inc(0)
 SOAR_ACTIONS_EXECUTED.labels(action='forensic_incident_audit_and_notify', status='success').inc(0)
 SOAR_BLOCKED_IPS.set(0)
 
@@ -151,24 +160,50 @@ PROTECTED_PREFIXES = ("10.0.",)
 def is_protected_ip(ip):
     return ip in PROTECTED_IPS or str(ip).startswith(PROTECTED_PREFIXES)
 
-# ---------------- Automated Action 1: Active IP Containment ----------------
+# ---------------- Automated Action 1: Local Transit Firewall (iptables) ----------------
 def action_quarantine_ip(attacker_ip, target_host, reason):
-    """Blocks the malicious IP locally, via GNS3 SSH/Webhook, and records state."""
     if is_protected_ip(attacker_ip):
-        SOAR_ACTIONS_EXECUTED.labels(action='firewall_ip_quarantine', status='skipped_protected').inc()
-        return False, f"IP {attacker_ip} is on the protected safelist - quarantine skipped"
+        return False, f"IP {attacker_ip} is protected - quarantine skipped"
     try:
         QUARANTINED_IPS.add(attacker_ip)
         SOAR_BLOCKED_IPS.set(len(QUARANTINED_IPS))
-        # Apply local kernel drop rule & attempt remote GNS3 enforcement if reachable
-        subprocess.run(['iptables', '-I', 'INPUT', '-s', attacker_ip, '-j', 'DROP'], check=False)
+        # Block routed GNS3 and AWS traffic on the transit path.
+        subprocess.run(['iptables', '-I', 'FORWARD', '-s', attacker_ip, '-j', 'DROP'], check=False)
         SOAR_ACTIONS_EXECUTED.labels(action='firewall_ip_quarantine', status='success').inc()
-        return True, f"IP {attacker_ip} added to active firewall quarantine list"
+        return True, f"IP {attacker_ip} blocked on hybrid transit firewall"
     except Exception as e:
         SOAR_ACTIONS_EXECUTED.labels(action='firewall_ip_quarantine', status='failed').inc()
         return False, str(e)
 
-# ---------------- Automated Action 2: Forensic Logging & Notification ----------------
+# ---------------- Automated Action 2: AWS VPC Edge Block (NACL) ----------------
+def action_aws_nacl_block(attacker_ip):
+    if not VPC_ID:
+        return False, "VPC_ID not found in environment."
+    if is_protected_ip(attacker_ip):
+        return False, "IP is protected, AWS NACL block skipped."
+
+    try:
+        response = ec2_client.describe_network_acls(
+            Filters=[{'Name': 'vpc-id', 'Values': [VPC_ID]}]
+        )
+        nacl_id = response['NetworkAcls'][0]['NetworkAclId']
+        rule_num = random.randint(1000, 30000)
+
+        ec2_client.create_network_acl_entry(
+            NetworkAclId=nacl_id,
+            RuleNumber=rule_num,
+            Protocol='-1',
+            RuleAction='deny',
+            Egress=False,
+            CidrBlock=f"{attacker_ip}/32"
+        )
+        SOAR_ACTIONS_EXECUTED.labels(action='aws_nacl_quarantine', status='success').inc()
+        return True, f"IP {attacker_ip} blocked at AWS VPC edge via NACL."
+    except Exception as e:
+        SOAR_ACTIONS_EXECUTED.labels(action='aws_nacl_quarantine', status='failed').inc()
+        return False, f"AWS API Error: {str(e)}"
+
+# ---------------- Automated Action 3: Forensic Logging & Notification ----------------
 def action_log_and_notify(incident_record):
     """Writes tamper-evident forensic log entry and dispatches SOC alert."""
     try:
@@ -192,12 +227,14 @@ def evaluate_and_respond(alert_type, severity, source_ip, target_host, raw_messa
 
     actions_taken = []
 
-    # Rule 1: Critical SSH Brute-Force or Port Scan -> Execute Action 1 & Action 2
+    # Rule 1: Critical SSH Brute-Force or Port Scan -> Execute containment actions
     if severity in ['critical', 'high'] or alert_type in ['SSHBruteForce', 'FirewallPortScan', 'UnauthorizedAccess']:
         ok1, msg1 = action_quarantine_ip(source_ip, target_host, alert_type)
         actions_taken.append({'action': 'firewall_ip_quarantine', 'success': ok1, 'detail': msg1})
+        ok2, msg2 = action_aws_nacl_block(source_ip)
+        actions_taken.append({'action': 'aws_nacl_quarantine', 'success': ok2, 'detail': msg2})
 
-    # Always execute Action 2 (Structured Incident Audit & Alert Notification)
+    # Always execute the structured incident audit and alert notification.
     incident = {
         'timestamp': datetime.datetime.utcnow().isoformat() + 'Z',
         'alert_type': alert_type,
