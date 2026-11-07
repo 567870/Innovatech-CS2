@@ -16,7 +16,7 @@ resource "aws_cloudwatch_metric_alarm" "monitoring_recovery_alarm" {
   comparison_operator = "GreaterThanThreshold"
   threshold           = 0
   metric_name         = "StatusCheckFailed_System"
-  
+
   dimensions = {
     InstanceId = aws_instance.monitoring_server.id
   }
@@ -34,7 +34,7 @@ resource "aws_cloudwatch_metric_alarm" "soar_recovery_alarm" {
   comparison_operator = "GreaterThanThreshold"
   threshold           = 0
   metric_name         = "StatusCheckFailed_System"
-  
+
   dimensions = {
     InstanceId = aws_instance.soar_server.id
   }
