@@ -178,6 +178,7 @@ resource "aws_security_group" "soar_sg" {
     cidr_blocks = [var.vpc_cidr, var.onprem_gns3_cidr, var.wireguard_vpn_cidr]
   }
 
+  # Allow return transit traffic from AWS VPC back to Hybrid Gateway
   ingress {
     description = "Allow return transit traffic from AWS VPC back to Hybrid Gateway"
     from_port   = 0
