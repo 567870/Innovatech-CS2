@@ -271,6 +271,20 @@ scrape_configs:
       - source_labels: [__meta_ec2_private_ip]
         target_label: __address__
         replacement: '${1}:5000'
+  - job_name: "ticket-app"
+    ec2_sd_configs:
+      - region: eu-central-1
+        port: 8080
+        filters:
+          - name: tag:Name
+            values: ["Web-ASG-Server"]
+    relabel_configs:
+      - source_labels: [__meta_ec2_instance_state]
+        regex: running
+        action: keep
+      - source_labels: [__meta_ec2_private_ip]
+        target_label: __address__
+        replacement: '${1}:8080'     
 PROMCONFIG
 
 chown -R prometheus:prometheus /etc/prometheus
