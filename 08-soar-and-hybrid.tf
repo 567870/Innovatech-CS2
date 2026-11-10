@@ -5,8 +5,8 @@
 # ==============================================================================
 
 resource "aws_instance" "soar_server" {
-  ami           = data.aws_ami.amazon_linux_2023.id
-  instance_type = var.ec2_instance_type
+  ami                    = data.aws_ami.amazon_linux_2023.id
+  instance_type          = var.ec2_instance_type
   subnet_id              = aws_subnet.public_1a.id
   iam_instance_profile   = aws_iam_instance_profile.soar_profile.name
   vpc_security_group_ids = [aws_security_group.soar_sg.id]
