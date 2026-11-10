@@ -11,14 +11,12 @@ dnf install -y wget tar unzip rsyslog
 
 # ------------------------------------------------------------------------------
 # 1. Configure Rsyslog Receiver (UDP 1514) for GNS3 Firewall & Auth Logs
-#    Satisfies (Log Source 1: pfSense FW, Log Source 2: Ubuntu SSH)
 # ------------------------------------------------------------------------------
 mkdir -p /var/log/hybrid
 cat << 'RSYSLOG' > /etc/rsyslog.d/hybrid-inputs.conf
 module(load="imudp")
 input(type="imudp" port="1514")
 
-# Separate GNS3 pfSense Firewall Logs (Source 1) and Ubuntu Auth Logs (Source 2)
 if ($fromhost-ip == '192.168.1.1' or $programname contains 'filterlog') then {
     action(type="omfile" file="/var/log/hybrid/pfsense-firewall.log")
 } else {
@@ -30,7 +28,7 @@ chmod 644 /var/log/hybrid/*.log
 systemctl enable --now rsyslog
 
 # ------------------------------------------------------------------------------
-# 2. Install Grafana Loki & Promtail (Log Storage & Indexing - Port 3100)
+# 2. Install Grafana Loki & Promtail (Log Storage & Indexing)
 # ------------------------------------------------------------------------------
 cd /tmp
 wget -q https://github.com/grafana/loki/releases/download/v2.9.4/loki-linux-amd64.zip
@@ -161,7 +159,7 @@ systemctl daemon-reload
 systemctl enable --now node_exporter
 
 # ------------------------------------------------------------------------------
-# 4. Install Prometheus (Fast 2s EC2 Auto-Discovery + SOAR Scraping 
+# 4. Install Prometheus
 # ------------------------------------------------------------------------------
 useradd --no-create-home --shell /bin/false prometheus
 mkdir -p /etc/prometheus /var/lib/prometheus
@@ -184,16 +182,6 @@ groups:
           severity: critical
         annotations:
           summary: "Web server is offline"
-          description: "Instance {{ $labels.instance }} has been down for 10 seconds."
-
-      - alert: HighCPUUsage
-        expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[1m])) * 100) > 80
-        for: 30s
-        labels:
-          severity: warning
-        annotations:
-          summary: "High CPU usage detected"
-          description: "CPU on {{ $labels.instance }} is above 80%."
 
       - alert: SOAREngineDown
         expr: up{job="soar-engine"} == 0
@@ -202,7 +190,6 @@ groups:
           severity: critical
         annotations:
           summary: "SOAR Engine is unreachable"
-          description: "The isolated SOAR platform is not responding to metric scrapes."
 
       - alert: SecurityAttackDetectedBySOAR
         expr: increase(soar_events_received_total[1m]) > 0
@@ -211,7 +198,14 @@ groups:
           severity: critical
         annotations:
           summary: "Active Security Incident Processed by SOAR"
-          description: "SOAR Engine processed new security alert(s) in the last 60 seconds."
+          
+      - alert: SOARpfSenseSyncFailure
+        expr: soar_pfsense_sync_ok == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SOAR cannot push blocklist to pfSense via SSH"
 ALERTS
 
 cat << 'PROMCONFIG' > /etc/prometheus/prometheus.yml
@@ -263,22 +257,6 @@ scrape_configs:
         target_label: __address__
         replacement: '${1}:9113'
 
-  - job_name: "flash-ticket-app"
-    ec2_sd_configs:
-      - region: eu-central-1
-        port: 8080
-        filters:
-          - name: tag:Name
-            values: ["Web-ASG-Server"]
-    relabel_configs:
-      - source_labels: [__meta_ec2_instance_state]
-        regex: running
-        action: keep
-      - source_labels: [__meta_ec2_private_ip]
-        target_label: __address__
-        replacement: '${1}:8080'
-
-  # Automatic Discovery of the Isolated SOAR Engine
   - job_name: "soar-engine"
     ec2_sd_configs:
       - region: eu-central-1
@@ -319,7 +297,7 @@ systemctl daemon-reload
 systemctl enable --now prometheus
 
 # ------------------------------------------------------------------------------
-# 5. Install Grafana & Auto-Provision Prometheus + Loki Data Sources & Dashboards
+# 5. Install Grafana & Dashboards
 # ------------------------------------------------------------------------------
 cat << 'REPO' > /etc/yum.repos.d/grafana.repo
 [grafana]
@@ -375,25 +353,44 @@ cat << 'JSON' > /var/lib/grafana/dashboards/flash-tickets.json
     {
       "title": "Total Tickets Sold",
       "type": "stat",
-      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
+      "gridPos": {"h": 6, "w": 4, "x": 0, "y": 0},
       "targets": [{"expr": "sum(tickets_sold_total)", "refId": "A", "instant": true}]
     },
     {
       "title": "Active Web Servers (UP)",
       "type": "stat",
-      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0},
+      "gridPos": {"h": 6, "w": 4, "x": 4, "y": 0},
       "targets": [{"expr": "sum(up{job=\"node-exporter\"})", "refId": "A", "instant": true}]
     },
     {
       "title": "SOAR System Status",
       "type": "stat",
-      "gridPos": {"h": 6, "w": 6, "x": 12, "y": 0},
+      "gridPos": {"h": 6, "w": 4, "x": 8, "y": 0},
       "targets": [{"expr": "sum(up{job=\"soar-engine\"})", "refId": "A", "instant": true}]
+    },
+    {
+      "title": "pfSense Sync Status",
+      "type": "stat",
+      "gridPos": {"h": 6, "w": 4, "x": 12, "y": 0},
+      "targets": [{"expr": "soar_pfsense_sync_ok", "refId": "A", "instant": true}],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {"color": "red", "index": 1, "text": "FAILED"},
+                "1": {"color": "green", "index": 0, "text": "SYNCED"}
+              }
+            }
+          ]
+        }
+      }
     },
     {
       "title": "Actively Quarantined IPs",
       "type": "table",
-      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 0},
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 0},
       "targets": [
         {
           "expr": "soar_banned_ip_list > 0",
