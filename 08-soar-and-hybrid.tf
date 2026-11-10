@@ -266,7 +266,7 @@ HTML_TEMPLATE = """
             <tr><td colspan="2" style="text-align: center; color: #7f8c8d; padding: 20px;">No active security threats currently quarantined.</td></tr>
             {% endfor %}
         </table>
-        <div class="footer">Innovatech Waterschap Brabantse Delta CS2 Architecture | End-to-End SOAR</div>
+        <div class="footer">Innovatech-CS2 | SOAR, Detects and Responds to Security Threats</div>
     </div>
 </body>
 </html>
