@@ -30,6 +30,9 @@ resource "aws_instance" "monitoring_server" {
     Name = "Monitoring-Server"
   }
 
+  # Forces Terraform to rebuild the EC2 instance if the bash script changes
+  user_data_replace_on_change = true
+
   # Uses the compressed script block from above
   user_data = data.cloudinit_config.monitoring_setup.rendered
 }

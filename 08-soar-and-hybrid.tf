@@ -65,8 +65,8 @@ cat << WGCONF > /etc/wireguard/wg0.conf
 Address = 10.99.0.1/24
 ListenPort = 51820
 PrivateKey = $(cat /etc/wireguard/server_private.key)
-PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o ens5 -j MASQUERADE
+PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o ens5 -j MASQUERADE
 WGCONF
 
 # Add GNS3 pfSense peer
@@ -93,12 +93,6 @@ systemctl enable --now wg-quick@wg0
 
 # ------------------------------------------------------------------------------
 # 1. Build the Containerized Python Event-Driven SOAR System (REQ-NCA-P2-08/09)
-#    - Listener 1: HTTP Webhook Receiver (POST /webhook on Port 5000)
-#    - Listener 2: Raw Syslog UDP Collector (Port 5140 for GNS3 pfSense/Ubuntu)
-#    - Rule Engine: Evaluates SSH Brute-Force, Firewall Scans & Web Attacks
-#    - Action 1: Active Containment (IP Quarantine via Firewall/AWS API)
-#    - Action 2: Forensic Incident Audit Log & SOC Notification Dispatch
-#    - Observability: Prometheus /metrics endpoint on Port 5000 (REQ-NCA-P2-09)
 # ------------------------------------------------------------------------------
 mkdir -p /opt/soar-engine /var/log/soar
 cd /opt/soar-engine
@@ -140,6 +134,11 @@ SOAR_BLOCKED_IPS = Gauge(
     'soar_blocked_ips_active',
     'Current number of malicious IP addresses actively quarantined by SOAR'
 )
+SOAR_BANNED_IP_LIST = Gauge(
+    'soar_banned_ip_list', 
+    'Actively quarantined IP addresses', 
+    ['ip']
+)
 
 # Initialize default label series so Grafana displays 0 immediately on boot
 SOAR_EVENTS_RECEIVED.labels(alert_type='SSHBruteForce', severity='critical', source_platform='gns3-onprem').inc(0)
@@ -167,6 +166,10 @@ def action_quarantine_ip(attacker_ip, target_host, reason):
     try:
         QUARANTINED_IPS.add(attacker_ip)
         SOAR_BLOCKED_IPS.set(len(QUARANTINED_IPS))
+        
+        # Expose the IP as a label so Grafana can render it in a table
+        SOAR_BANNED_IP_LIST.labels(ip=attacker_ip).set(1)
+
         # Block routed GNS3 and AWS traffic on the transit path.
         subprocess.run(['iptables', '-I', 'FORWARD', '-s', attacker_ip, '-j', 'DROP'], check=False)
         SOAR_ACTIONS_EXECUTED.labels(action='firewall_ip_quarantine', status='success').inc()
@@ -227,14 +230,12 @@ def evaluate_and_respond(alert_type, severity, source_ip, target_host, raw_messa
 
     actions_taken = []
 
-    # Rule 1: Critical SSH Brute-Force or Port Scan -> Execute containment actions
     if severity in ['critical', 'high'] or alert_type in ['SSHBruteForce', 'FirewallPortScan', 'UnauthorizedAccess']:
         ok1, msg1 = action_quarantine_ip(source_ip, target_host, alert_type)
         actions_taken.append({'action': 'firewall_ip_quarantine', 'success': ok1, 'detail': msg1})
         ok2, msg2 = action_aws_nacl_block(source_ip)
         actions_taken.append({'action': 'aws_nacl_quarantine', 'success': ok2, 'detail': msg2})
 
-    # Always execute the structured incident audit and alert notification.
     incident = {
         'timestamp': datetime.datetime.utcnow().isoformat() + 'Z',
         'alert_type': alert_type,
@@ -252,7 +253,6 @@ def evaluate_and_respond(alert_type, severity, source_ip, target_host, raw_messa
 
 # ---------------- Event Listener 1: Syslog UDP Collector (Port 5140) ----------------
 def udp_syslog_listener():
-    """Listens for real-time syslog packets from GNS3 Monitored-Server & pfSense."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(('0.0.0.0', 5140))
     while True:
@@ -260,7 +260,6 @@ def udp_syslog_listener():
             data, addr = sock.recvfrom(4096)
             line = data.decode('utf-8', errors='ignore').strip()
 
-            # Detect Linux SSH Failed Password events (Log Source 2)
             if 'Failed password' in line or 'Invalid user' in line:
                 ip_match = re.search(r'from\s+(\d+\.\d+\.\d+\.\d+)', line)
                 attacker_ip = ip_match.group(1) if ip_match else addr[0]
@@ -280,7 +279,6 @@ def udp_syslog_listener():
                     )
                     SSH_FAILURE_TRACKER[attacker_ip] = []
 
-            # Detect pfSense Firewall Drop / Port Scan events (Log Source 1)
             elif 'filterlog' in line and ',block,' in line:
                 parts = line.split(',')
                 attacker_ip = parts[18] if len(parts) > 20 else addr[0]

@@ -11,7 +11,7 @@ dnf install -y wget tar unzip rsyslog
 
 # ------------------------------------------------------------------------------
 # 1. Configure Rsyslog Receiver (UDP 1514) for GNS3 Firewall & Auth Logs
-#    Satisfies REQ-NCA-P2-07 (Log Source 1: pfSense FW, Log Source 2: Ubuntu SSH)
+#    Satisfies (Log Source 1: pfSense FW, Log Source 2: Ubuntu SSH)
 # ------------------------------------------------------------------------------
 mkdir -p /var/log/hybrid
 cat << 'RSYSLOG' > /etc/rsyslog.d/hybrid-inputs.conf
@@ -161,7 +161,7 @@ systemctl daemon-reload
 systemctl enable --now node_exporter
 
 # ------------------------------------------------------------------------------
-# 4. Install Prometheus (Fast 2s EC2 Auto-Discovery + SOAR Scraping REQ-NCA-P2-09)
+# 4. Install Prometheus (Fast 2s EC2 Auto-Discovery + SOAR Scraping 
 # ------------------------------------------------------------------------------
 useradd --no-create-home --shell /bin/false prometheus
 mkdir -p /etc/prometheus /var/lib/prometheus
@@ -278,7 +278,7 @@ scrape_configs:
         target_label: __address__
         replacement: '${1}:8080'
 
-  # Automatic Discovery of the Isolated SOAR Engine (REQ-NCA-P2-09)
+  # Automatic Discovery of the Isolated SOAR Engine
   - job_name: "soar-engine"
     ec2_sd_configs:
       - region: eu-central-1
@@ -370,7 +370,7 @@ cat << 'JSON' > /var/lib/grafana/dashboards/flash-tickets.json
 {
   "title": "Innovatech Operations, Logs & SOAR Dashboard",
   "schemaVersion": 38,
-  "refresh": "5s",
+  "refresh": "2s",
   "panels": [
     {
       "title": "Total Tickets Sold",
@@ -385,19 +385,35 @@ cat << 'JSON' > /var/lib/grafana/dashboards/flash-tickets.json
       "targets": [{"expr": "sum(up{job=\"node-exporter\"})", "refId": "A", "instant": true}]
     },
     {
-      "title": "SOAR System Status (REQ-NCA-P2-09)",
+      "title": "SOAR System Status",
       "type": "stat",
       "gridPos": {"h": 6, "w": 6, "x": 12, "y": 0},
       "targets": [{"expr": "sum(up{job=\"soar-engine\"})", "refId": "A", "instant": true}]
     },
     {
-      "title": "Active Quarantined IPs (SOAR Blocklist)",
-      "type": "stat",
+      "title": "Actively Quarantined IPs",
+      "type": "table",
       "gridPos": {"h": 6, "w": 6, "x": 18, "y": 0},
-      "targets": [{"expr": "sum(soar_blocked_ips_active)", "refId": "A", "instant": true}]
+      "targets": [
+        {
+          "expr": "soar_banned_ip_list > 0",
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {"Time": true, "Value": true, "__name__": true, "instance": true, "job": true},
+            "renameByName": {"ip": "Attacker IP Address"}
+          }
+        }
+      ]
     },
     {
-      "title": "SOAR Security Events Processed & Actions Executed (REQ-NCA-P2-09)",
+      "title": "SOAR Security Events Processed & Actions Executed",
       "type": "timeseries",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
       "targets": [

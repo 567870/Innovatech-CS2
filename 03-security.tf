@@ -127,6 +127,14 @@ resource "aws_security_group" "monitoring_sg" {
     cidr_blocks = [var.vpc_cidr, var.onprem_gns3_cidr, var.wireguard_vpn_cidr]
   }
 
+  ingress {
+    description = "Allow ICMP Ping from VPC, GNS3 HQ, and VPN Tunnel"
+    from_port   = -1
+    to_port     = -1
+    protocol    = "icmp"
+    cidr_blocks = [var.vpc_cidr, var.onprem_gns3_cidr, var.wireguard_vpn_cidr]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -153,11 +161,11 @@ resource "aws_security_group" "soar_sg" {
   }
 
   ingress {
-    description = "Allow ICMP from GNS3 HQ"
+    description = "Allow ICMP Ping from VPC, GNS3 HQ, and VPN Tunnel"
     from_port   = -1
     to_port     = -1
     protocol    = "icmp"
-    cidr_blocks = ["192.168.1.0/24"]
+    cidr_blocks = [var.vpc_cidr, var.onprem_gns3_cidr, var.wireguard_vpn_cidr]
   }
 
   # SOAR Event Listener Webhook API & Prometheus /metrics Endpoint (Port 5000)
