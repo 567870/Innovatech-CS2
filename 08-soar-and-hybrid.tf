@@ -18,9 +18,9 @@ locals {
 
   # pfSense push over the WireGuard tunnel (SSH + pfctl).
   soar_pfsense_push     = "true"
-  soar_pfsense_ssh_host = "10.99.0.2"       # pfSense tunnel address
+  soar_pfsense_ssh_host = "10.99.0.2" # pfSense tunnel address
   soar_pfsense_ssh_user = "admin"
-  soar_pfsense_table    = "SOAR_BLOCKLIST"  # alias name that must exist on pfSense
+  soar_pfsense_table    = "SOAR_BLOCKLIST" # alias name that must exist on pfSense
 
   # Leave empty = block on every NACL in the VPC that has subnets associated.
   # Or pin explicit NACLs, e.g. "acl-0123456789abcdef0,acl-0fedcba9876543210".
