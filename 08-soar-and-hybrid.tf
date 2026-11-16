@@ -169,7 +169,7 @@ resource "aws_instance" "soar_server" {
   }
 
   # IMPORTANT: Temporarily set to true for this exact commit to rebuild the instance with the new volume mount.
-  user_data_replace_on_change = true
+  user_data_replace_on_change = false
   user_data_base64            = data.cloudinit_config.soar_setup.rendered
 }
 
