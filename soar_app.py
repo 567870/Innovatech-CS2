@@ -582,7 +582,7 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div class="container">
-        <h1>Innovatech SOAR Management Portal</h1>
+        <h1>Innovatech SOAR Management Portal01</h1>
         {% for category, message in get_flashed_messages(with_categories=true) %}
         <div class="notice {{ category }}"><b>System Notice:</b> {{ message }}</div>
         {% endfor %}
