@@ -466,8 +466,11 @@ def action_log_and_notify(record):
 def evaluate_and_respond(alert_type, severity, source_ip, target_host, raw_message, platform='gns3-onprem'):
     SOAR_EVENTS_RECEIVED.labels(alert_type=alert_type, severity=severity, source_platform=platform).inc()
     result = 'logged only'
-    if severity in ('critical', 'high') or alert_type in ('SSHBruteForce', 'FirewallPortScan'):
+    
+    # Only blocks if severity is 'critical' (so 'high' just gets logged)
+    if severity == 'critical' or alert_type == 'FirewallPortScan':
         result = quarantine_ip(source_ip, alert_type, severity, platform)
+        
     action_log_and_notify({
         'timestamp': now_iso(), 'alert_type': alert_type, 'severity': severity,
         'attacker_ip': source_ip, 'target_host': target_host, 'platform': platform,
@@ -502,12 +505,26 @@ def udp_syslog_listener():
                 ip_match = re.search(r'from\s+(\d+\.\d+\.\d+\.\d+)', line)
                 attacker_ip = ip_match.group(1) if ip_match else addr[0]
                 now = time.time()
+                
+                # Keep attempts from the last 120 seconds
                 history = [t for t in SSH_FAILURE_TRACKER.get(attacker_ip, []) if now - t < 120]
                 history.append(now)
                 SSH_FAILURE_TRACKER[attacker_ip] = history
-                if len(history) >= 3:
-                    evaluate_and_respond('SSHBruteForce', 'critical', attacker_ip, '192.168.1.10', line)
+                
+                attempts = len(history)
+                
+                # Escalating severity logic
+                if attempts == 1:
+                    evaluate_and_respond('SSHLoginFailed', 'low', attacker_ip, addr[0], line)
+                elif attempts == 2:
+                    evaluate_and_respond('SSHLoginFailed', 'medium', attacker_ip, addr[0], line)
+                elif attempts == 3:
+                    evaluate_and_respond('SSHLoginFailed', 'high', attacker_ip, addr[0], line)
+                elif attempts >= 4:
+                    evaluate_and_respond('SSHBruteForce', 'critical', attacker_ip, addr[0], line)
+                    # Reset the tracker after blocking so it doesn't spam blocks on subsequent attempts
                     SSH_FAILURE_TRACKER[attacker_ip] = []
+                    
         except Exception:
             log.exception('syslog listener error')
             continue
@@ -528,6 +545,7 @@ HTML_TEMPLATE = """
         h1 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
         h2 { color: #2c3e50; margin-top: 32px; }
         .table-wrap { overflow-x: auto; }
+        .scrollable-box { max-height: 400px; overflow-y: auto; border-bottom: 1px solid #ddd; }
         table { border-collapse: collapse; width: 100%; margin-top: 12px; }
         th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; font-size: 0.95em; }
         th { background-color: #34495e; color: white; }
@@ -537,18 +555,30 @@ HTML_TEMPLATE = """
         .notice.success { color: #27ae60; background: #e8f8f5; border-left: 5px solid #27ae60; }
         .notice.warning { color: #9a6700; background: #fff8e1; border-left: 5px solid #f39c12; }
         .notice.error { color: #c0392b; background: #fdecea; border-left: 5px solid #c0392b; }
-        .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.8em; font-weight: bold; margin-right: 4px; }
+        
+        /* Base Badge Style */
+        .badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 0.8em; font-weight: bold; margin-right: 4px; text-transform: uppercase; }
+        
+        /* Integration Status Colors */
         .badge.ok { background: #e8f8f5; color: #1e8449; }
         .badge.fail { background: #fdecea; color: #c0392b; }
         .badge.pending { background: #fff8e1; color: #9a6700; }
         .badge.off { background: #eceff1; color: #607d8b; }
+        
+        /* New Incident Severity Colors */
+        .badge.sev-low { background: #ebf5fb; color: #2980b9; }      /* Blue */
+        .badge.sev-medium { background: #fcf3cf; color: #b7950b; }   /* Yellow */
+        .badge.sev-high { background: #fdecea; color: #d35400; }     /* Orange */
+        .badge.sev-critical { background: #fadbd8; color: #c0392b; border: 1px solid #c0392b; } /* Red with border */
+        .badge.sev-- { background: #eceff1; color: #7f8c8d; }        /* Fallback Gray */
+        
         .empty { text-align: center; color: #7f8c8d; padding: 20px; }
         .footer { margin-top: 30px; font-size: 0.9em; color: #7f8c8d; text-align: center; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Innovatech SOAR Management Portal01</h1>
+        <h1>Innovatech SOAR Management Portal</h1>
         {% for category, message in get_flashed_messages(with_categories=true) %}
         <div class="notice {{ category }}"><b>System Notice:</b> {{ message }}</div>
         {% endfor %}
@@ -582,14 +612,15 @@ HTML_TEMPLATE = """
         </div>
 
         <h2>Recent incidents</h2>
-        <div class="table-wrap">
+        <div class="scrollable-box">
         <table>
             <tr><th>Time</th><th>Alert</th><th>Severity</th><th>Attacker IP</th><th>Result</th></tr>
             {% for i in incidents %}
             <tr>
                 <td>{{ i.time }}</td>
                 <td>{{ i.alert }}</td>
-                <td>{{ i.severity }}</td>
+                <!-- Injecting the severity level dynamically into the CSS class -->
+                <td><span class="badge sev-{{ i.severity | lower }}">{{ i.severity }}</span></td>
                 <td>{{ i.ip }}</td>
                 <td>{{ i.result }}</td>
             </tr>
@@ -647,7 +678,7 @@ def index():
         'severity': i.get('severity', '-'),
         'ip': i.get('attacker_ip', '-'),
         'result': i.get('result', '-'),
-    } for i in list(INCIDENT_HISTORY)[-20:][::-1]]
+    } for i in list(INCIDENT_HISTORY)[::-1]]
     pf_class, pf_text = pfsense_status_view()
     return render_template_string(HTML_TEMPLATE, rows=rows, incidents=incidents,
                                   pf_class=pf_class, pf_text=pf_text, csrf=csrf_token())
