@@ -494,6 +494,7 @@ def reconcile_on_start():
 
 
 # ---------------- Event listeners ----------------
+# ---------------- Event listeners ----------------
 def udp_syslog_listener():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(('0.0.0.0', 5140))
@@ -508,22 +509,26 @@ def udp_syslog_listener():
                 
                 # Keep attempts from the last 120 seconds
                 history = [t for t in SSH_FAILURE_TRACKER.get(attacker_ip, []) if now - t < 120]
-                history.append(now)
-                SSH_FAILURE_TRACKER[attacker_ip] = history
                 
-                attempts = len(history)
-                
-                # Escalating severity logic
-                if attempts == 1:
-                    evaluate_and_respond('SSHLoginFailed', 'low', attacker_ip, addr[0], line)
-                elif attempts == 2:
-                    evaluate_and_respond('SSHLoginFailed', 'medium', attacker_ip, addr[0], line)
-                elif attempts == 3:
-                    evaluate_and_respond('SSHLoginFailed', 'high', attacker_ip, addr[0], line)
-                elif attempts >= 4:
-                    evaluate_and_respond('SSHBruteForce', 'critical', attacker_ip, addr[0], line)
-                    # Reset the tracker after blocking so it doesn't spam blocks on subsequent attempts
-                    SSH_FAILURE_TRACKER[attacker_ip] = []
+                # DEBOUNCE FIX: Only count as a new attempt if it has been more than 2 seconds 
+                # since the last log line, ignoring the instant duplicate syslog bursts.
+                if not history or (now - history[-1]) > 2.0:
+                    history.append(now)
+                    SSH_FAILURE_TRACKER[attacker_ip] = history
+                    
+                    attempts = len(history)
+                    
+                    # Escalating severity logic
+                    if attempts == 1:
+                        evaluate_and_respond('SSHLoginFailed', 'low', attacker_ip, addr[0], line)
+                    elif attempts == 2:
+                        evaluate_and_respond('SSHLoginFailed', 'medium', attacker_ip, addr[0], line)
+                    elif attempts == 3:
+                        evaluate_and_respond('SSHLoginFailed', 'high', attacker_ip, addr[0], line)
+                    elif attempts >= 4:
+                        evaluate_and_respond('SSHBruteForce', 'critical', attacker_ip, addr[0], line)
+                        # Reset the tracker after blocking so it doesn't spam blocks on subsequent attempts
+                        SSH_FAILURE_TRACKER[attacker_ip] = []
                     
         except Exception:
             log.exception('syslog listener error')
