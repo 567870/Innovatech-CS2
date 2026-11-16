@@ -494,7 +494,6 @@ def reconcile_on_start():
 
 
 # ---------------- Event listeners ----------------
-# ---------------- Event listeners ----------------
 def udp_syslog_listener():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(('0.0.0.0', 5140))
