@@ -78,8 +78,15 @@ SOAR_PFSENSE_SYNC_OK.set(1 if not PFSENSE_ENABLED else 0)
 STATE_LOCK = threading.RLock()
 QUARANTINE = {}                       # ip -> entry dict
 INCIDENT_HISTORY = deque(maxlen=MAX_HISTORY)
-SSH_FAILURE_TRACKER = {}
+SSH_FAILURE_TRACKER = {}              # ip -> [timestamps of failed logins]
+PORTSCAN_TRACKER = {}                 # ip -> {dest_port: last_seen}
+PORTSCAN_WARNED = set()               # ips that already got the 'medium' port-scan warning
 _EXPORTED_IPS = set()
+
+SSH_WINDOW = 120                      # seconds a failed login counts towards the ladder
+PORTSCAN_WINDOW = 30                  # seconds in which distinct ports are counted
+PORTSCAN_WARN = int(os.environ.get('PORTSCAN_WARN', '5'))     # distinct ports -> medium (logged)
+PORTSCAN_BLOCK = int(os.environ.get('PORTSCAN_BLOCK', '15'))  # distinct ports -> critical (quarantine)
 
 PFSENSE_DIRTY = threading.Event()
 PFSENSE_PENDING_KILL = set()
@@ -445,6 +452,9 @@ def unblock_ip(ip):
     with STATE_LOCK:
         QUARANTINE.pop(ip, None)
         PFSENSE_PENDING_KILL.discard(ip)
+    SSH_FAILURE_TRACKER.pop(ip, None)     # a released IP starts again at LOW
+    PORTSCAN_TRACKER.pop(ip, None)
+    PORTSCAN_WARNED.discard(ip)
     save_state()
     refresh_metrics()
     SOAR_ACTIONS_EXECUTED.labels(action='ip_unblock', status='success').inc()
@@ -467,8 +477,8 @@ def evaluate_and_respond(alert_type, severity, source_ip, target_host, raw_messa
     SOAR_EVENTS_RECEIVED.labels(alert_type=alert_type, severity=severity, source_platform=platform).inc()
     result = 'logged only'
     
-    # Only blocks if severity is 'critical' (so 'high' just gets logged)
-    if severity == 'critical' or alert_type == 'FirewallPortScan':
+    # Only 'critical' quarantines; low/medium/high are logged only
+    if severity == 'critical':
         result = quarantine_ip(source_ip, alert_type, severity, platform)
         
     action_log_and_notify({
@@ -494,6 +504,75 @@ def reconcile_on_start():
 
 
 # ---------------- Event listeners ----------------
+IPTABLES_LOG_RE = re.compile(r'SRC=(\d+\.\d+\.\d+\.\d+).*?PROTO=(?:TCP|UDP).*?DPT=(\d+)')
+FILTERLOG_RE = re.compile(r'filterlog\S*:\s*(.*)')
+
+
+def is_quarantined(ip):
+    with STATE_LOCK:
+        return ip in QUARANTINE
+
+
+def handle_ssh_failure(ip, host, line):
+    """Ladder: 1st = low, 2nd = medium, 3rd = high, 4th = critical (quarantine)."""
+    if is_quarantined(ip):
+        return                            # already blocked: no more noise, no fake 'LOW' after the block
+    now = time.time()
+    history = [t for t in SSH_FAILURE_TRACKER.get(ip, []) if now - t < SSH_WINDOW]
+    history.append(now)
+    SSH_FAILURE_TRACKER[ip] = history
+    attempts = len(history)
+    if attempts == 1:
+        evaluate_and_respond('SSHLoginFailed', 'low', ip, host, line)
+    elif attempts == 2:
+        evaluate_and_respond('SSHLoginFailed', 'medium', ip, host, line)
+    elif attempts == 3:
+        evaluate_and_respond('SSHLoginFailed', 'high', ip, host, line)
+    else:
+        evaluate_and_respond('SSHBruteForce', 'critical', ip, host, line)
+        SSH_FAILURE_TRACKER.pop(ip, None)
+
+
+def parse_portscan_line(line):
+    """Returns (src_ip, dest_port) for a blocked/logged connection, else None.
+    Understands iptables LOG lines (SRC=.. DPT=..) and pfSense filterlog CSV lines."""
+    m = IPTABLES_LOG_RE.search(line)
+    if m:
+        return m.group(1), int(m.group(2))
+    m = FILTERLOG_RE.search(line)
+    if m:
+        f = m.group(1).split(',')
+        # IPv4 tcp/udp: [6]=action [8]=ipver [16]=proto [18]=src [19]=dst [20]=sport [21]=dport
+        if len(f) > 21 and f[6] == 'block' and f[8] == '4' and f[16].lower() in ('tcp', 'udp'):
+            try:
+                return f[18], int(f[21])
+            except ValueError:
+                return None
+    return None
+
+
+def handle_portscan(ip, port, host, line):
+    """Many DIFFERENT destination ports from one source in a short time = port scan."""
+    if is_quarantined(ip):
+        return
+    now = time.time()
+    ports = PORTSCAN_TRACKER.setdefault(ip, {})
+    ports[port] = now
+    for p in [p for p, t in ports.items() if now - t > PORTSCAN_WINDOW]:
+        del ports[p]
+    n = len(ports)
+    if n >= PORTSCAN_BLOCK:
+        evaluate_and_respond('FirewallPortScan', 'critical', ip, host, line)
+        PORTSCAN_TRACKER.pop(ip, None)
+        PORTSCAN_WARNED.discard(ip)
+    elif n >= PORTSCAN_WARN:
+        if ip not in PORTSCAN_WARNED:
+            PORTSCAN_WARNED.add(ip)
+            evaluate_and_respond('FirewallPortScan', 'medium', ip, host, line)
+    else:
+        PORTSCAN_WARNED.discard(ip)
+
+
 def udp_syslog_listener():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(('0.0.0.0', 5140))
@@ -501,34 +580,15 @@ def udp_syslog_listener():
         try:
             data, addr = sock.recvfrom(4096)
             line = data.decode('utf-8', errors='ignore').strip()
-            if 'Failed password' in line or 'Invalid user' in line:
+            if 'Failed password' in line:
+                # Count ONLY 'Failed password': sshd also writes 'Invalid user' / 'Connection closed'
+                # lines for the same attempt, which is what caused the double counting.
                 ip_match = re.search(r'from\s+(\d+\.\d+\.\d+\.\d+)', line)
-                attacker_ip = ip_match.group(1) if ip_match else addr[0]
-                now = time.time()
-                
-                # Keep attempts from the last 120 seconds
-                history = [t for t in SSH_FAILURE_TRACKER.get(attacker_ip, []) if now - t < 120]
-                
-                # DEBOUNCE FIX: Only count as a new attempt if it has been more than 2 seconds 
-                # since the last log line, ignoring the instant duplicate syslog bursts.
-                if not history or (now - history[-1]) > 2.0:
-                    history.append(now)
-                    SSH_FAILURE_TRACKER[attacker_ip] = history
-                    
-                    attempts = len(history)
-                    
-                    # Escalating severity logic
-                    if attempts == 1:
-                        evaluate_and_respond('SSHLoginFailed', 'low', attacker_ip, addr[0], line)
-                    elif attempts == 2:
-                        evaluate_and_respond('SSHLoginFailed', 'medium', attacker_ip, addr[0], line)
-                    elif attempts == 3:
-                        evaluate_and_respond('SSHLoginFailed', 'high', attacker_ip, addr[0], line)
-                    elif attempts >= 4:
-                        evaluate_and_respond('SSHBruteForce', 'critical', attacker_ip, addr[0], line)
-                        # Reset the tracker after blocking so it doesn't spam blocks on subsequent attempts
-                        SSH_FAILURE_TRACKER[attacker_ip] = []
-                    
+                handle_ssh_failure(ip_match.group(1) if ip_match else addr[0], addr[0], line)
+            else:
+                scan = parse_portscan_line(line)
+                if scan:
+                    handle_portscan(scan[0], scan[1], addr[0], line)
         except Exception:
             log.exception('syslog listener error')
             continue
@@ -582,7 +642,7 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div class="container">
-        <h1>Innovatech SOAR Management Portal01</h1>
+        <h1>Innovatech SOAR Management Portal</h1>
         {% for category, message in get_flashed_messages(with_categories=true) %}
         <div class="notice {{ category }}"><b>System Notice:</b> {{ message }}</div>
         {% endfor %}
