@@ -19,7 +19,7 @@ variable "vpc_cidr" {
 variable "onprem_gns3_cidr" {
   description = "CIDR block for Innovatech Breda HQ simulated in GNS3"
   type        = string
-  default     = "192.168.0.0/24"
+  default     = "192.168.1.0/24"
 }
 
 variable "wireguard_vpn_cidr" {
