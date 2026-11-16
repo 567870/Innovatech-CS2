@@ -545,6 +545,7 @@ HTML_TEMPLATE = """
         h1 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
         h2 { color: #2c3e50; margin-top: 32px; }
         .table-wrap { overflow-x: auto; }
+        .scrollable-box { max-height: 400px; overflow-y: auto; border-bottom: 1px solid #ddd; }
         table { border-collapse: collapse; width: 100%; margin-top: 12px; }
         th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; font-size: 0.95em; }
         th { background-color: #34495e; color: white; }
@@ -611,7 +612,7 @@ HTML_TEMPLATE = """
         </div>
 
         <h2>Recent incidents</h2>
-        <div class="table-wrap">
+        <div class="scrollable-box">
         <table>
             <tr><th>Time</th><th>Alert</th><th>Severity</th><th>Attacker IP</th><th>Result</th></tr>
             {% for i in incidents %}
@@ -677,7 +678,7 @@ def index():
         'severity': i.get('severity', '-'),
         'ip': i.get('attacker_ip', '-'),
         'result': i.get('result', '-'),
-    } for i in list(INCIDENT_HISTORY)[-20:][::-1]]
+    } for i in list(INCIDENT_HISTORY)[::-1]]
     pf_class, pf_text = pfsense_status_view()
     return render_template_string(HTML_TEMPLATE, rows=rows, incidents=incidents,
                                   pf_class=pf_class, pf_text=pf_text, csrf=csrf_token())
