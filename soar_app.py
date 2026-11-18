@@ -83,7 +83,8 @@ PORTSCAN_TRACKER = {}                 # ip -> {dest_port: last_seen}
 PORTSCAN_WARNED = set()               # ips that already got the 'medium' port-scan warning
 _EXPORTED_IPS = set()
 
-SSH_WINDOW = 120                      # seconds a failed login counts towards the ladder
+SSH_WINDOW = int(os.environ.get('SSH_WINDOW', '120'))          # seconds a failed login counts towards the ladder
+SSH_BLOCK_AFTER = max(1, int(os.environ.get('SSH_BLOCK_AFTER', '4')))  # failed logins before quarantine
 PORTSCAN_WINDOW = 30                  # seconds in which distinct ports are counted
 PORTSCAN_WARN = int(os.environ.get('PORTSCAN_WARN', '5'))     # distinct ports -> medium (logged)
 PORTSCAN_BLOCK = int(os.environ.get('PORTSCAN_BLOCK', '15'))  # distinct ports -> critical (quarantine)
@@ -522,15 +523,12 @@ def handle_ssh_failure(ip, host, line):
     history.append(now)
     SSH_FAILURE_TRACKER[ip] = history
     attempts = len(history)
-    if attempts == 1:
-        evaluate_and_respond('SSHLoginFailed', 'low', ip, host, line)
-    elif attempts == 2:
-        evaluate_and_respond('SSHLoginFailed', 'medium', ip, host, line)
-    elif attempts == 3:
-        evaluate_and_respond('SSHLoginFailed', 'high', ip, host, line)
-    else:
+    if attempts >= SSH_BLOCK_AFTER:
         evaluate_and_respond('SSHBruteForce', 'critical', ip, host, line)
         SSH_FAILURE_TRACKER.pop(ip, None)
+    else:
+        severity = 'low' if attempts == 1 else 'medium' if attempts == 2 else 'high'
+        evaluate_and_respond('SSHLoginFailed', severity, ip, host, line)
 
 
 def parse_portscan_line(line):
@@ -578,22 +576,48 @@ def handle_portscan(ip, port, host, line):
         PORTSCAN_WARNED.discard(ip)
 
 
+_RECENT_LINES = {}                    # raw line -> time last seen (drops duplicated syslog packets)
+
+
+def is_duplicate_line(line):
+    """True if the exact same line (same text, timestamp and port) arrived < 1 s ago.
+    sshd delays every failed password by ~2 s, so two real attempts never produce an identical
+    line that fast; an identical line this soon is a duplicated packet."""
+    now = time.time()
+    for k in [k for k, t in _RECENT_LINES.items() if now - t > 3]:
+        del _RECENT_LINES[k]
+    if line in _RECENT_LINES and now - _RECENT_LINES[line] < 1.0:
+        return True
+    _RECENT_LINES[line] = now
+    return False
+
+
+def process_syslog_line(line, sender):
+    if is_duplicate_line(line):
+        return
+    if 'Failed password' in line:
+        # Count ONLY 'Failed password': sshd also writes 'Invalid user' / 'Connection closed'
+        # lines for the same attempt, which would double count.
+        ip_match = re.search(r'from\s+(\d+\.\d+\.\d+\.\d+)', line)
+        ip = ip_match.group(1) if ip_match else sender
+        # rsyslog may fold identical lines into 'message repeated N times: [ Failed password ... ]'
+        rep = re.search(r'message repeated (\d+) times', line)
+        count = min(int(rep.group(1)), 20) if rep else 1
+        for _ in range(count):
+            handle_ssh_failure(ip, sender, line)
+    else:
+        scan = parse_portscan_line(line)
+        if scan:
+            handle_portscan(scan[0], scan[1], sender, line)
+
+
 def udp_syslog_listener():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(('0.0.0.0', 5140))
     while True:
         try:
             data, addr = sock.recvfrom(4096)
-            line = data.decode('utf-8', errors='ignore').strip()
-            if 'Failed password' in line:
-                # Count ONLY 'Failed password': sshd also writes 'Invalid user' / 'Connection closed'
-                # lines for the same attempt, which is what caused the double counting.
-                ip_match = re.search(r'from\s+(\d+\.\d+\.\d+\.\d+)', line)
-                handle_ssh_failure(ip_match.group(1) if ip_match else addr[0], addr[0], line)
-            else:
-                scan = parse_portscan_line(line)
-                if scan:
-                    handle_portscan(scan[0], scan[1], addr[0], line)
+            process_syslog_line(data.decode('utf-8', errors='ignore').strip(), addr[0])
         except Exception:
             log.exception('syslog listener error')
             continue
