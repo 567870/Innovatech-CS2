@@ -542,12 +542,17 @@ def parse_portscan_line(line):
     m = FILTERLOG_RE.search(line)
     if m:
         f = m.group(1).split(',')
-        # IPv4 tcp/udp: [6]=action [8]=ipver [16]=proto [18]=src [19]=dst [20]=sport [21]=dport
-        if len(f) > 21 and f[6] == 'block' and f[8] == '4' and f[16].lower() in ('tcp', 'udp'):
-            try:
-                return f[18], int(f[21])
-            except ValueError:
-                return None
+        # IPv4 tcp/udp: [6]=action [8]=ipver [16]=proto [18]=src [19]=dst [20]=sport [21]=dport [23]=tcpflags
+        if len(f) > 21 and f[8] == '4' and f[16].lower() in ('tcp', 'udp'):
+            proto = f[16].lower()
+            action = f[6]
+            # blocked packets, plus new TCP connections (SYN only) that a logged PASS rule let through
+            counts = action == 'block' or (action == 'pass' and proto == 'tcp' and len(f) > 23 and f[23] == 'S')
+            if counts:
+                try:
+                    return f[18], int(f[21])
+                except ValueError:
+                    return None
     return None
 
 
